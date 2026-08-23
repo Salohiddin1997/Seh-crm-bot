@@ -82,16 +82,55 @@ def add_client(name, phone=None, telegram_id=None, username=None):
         conn.close()
 
 
-def find_client(name):
+def normalize_text(value):
+    """Ism qidirishda katta-kichik harf va ortiqcha bo'shliqlarni bir xil qiladi."""
+    return " ".join((value or "").strip().casefold().split())
+
+
+def parse_amount(value):
+    """5000000, 5 000 000, 5.000.000 va 5,000,000 ni qabul qiladi."""
+    raw = (value or "").strip()
+    cleaned = raw.replace(" ", "").replace("\u00a0", "")
+    if not cleaned:
+        raise ValueError
+
+    # O'zbek so'm summalarida nuqta/vergul minglik ajratgich bo'lishi mumkin.
+    if cleaned.count(".") > 1 or cleaned.count(",") > 1:
+        cleaned = cleaned.replace(".", "").replace(",", "")
+    elif "." in cleaned and "," in cleaned:
+        cleaned = cleaned.replace(".", "").replace(",", "")
+    elif "." in cleaned and len(cleaned.split(".")[-1]) == 3:
+        cleaned = cleaned.replace(".", "")
+    elif "," in cleaned and len(cleaned.split(",")[-1]) == 3:
+        cleaned = cleaned.replace(",", "")
+
+    amount = float(cleaned)
+    if amount <= 0:
+        raise ValueError
+    return amount
+
+
+def find_client(name_or_id):
+    """Avval Telegram ID, keyin ism bo'yicha mijozni topadi."""
+    value = (name_or_id or "").strip()
+    if value.isdigit():
+        client = get_client_by_tg(int(value))
+        if client:
+            return client
+
+    target = normalize_text(value)
     conn = db()
-    row = conn.execute(
-        """SELECT * FROM clients
-           WHERE lower(name) LIKE lower(?)
-           ORDER BY id DESC LIMIT 1""",
-        (f"%{name}%",)
-    ).fetchone()
+    clients = conn.execute("SELECT * FROM clients ORDER BY id DESC").fetchall()
     conn.close()
-    return row
+
+    # Avval aniq moslik, keyin qisman moslik.
+    for client in clients:
+        if normalize_text(client["name"]) == target:
+            return client
+    for client in clients:
+        if target and target in normalize_text(client["name"]):
+            return client
+    return None
 
 
 def get_client_by_tg(tg_id):
@@ -178,7 +217,7 @@ async def start(message: Message):
     if existing:
         await message.answer(
             f"Assalomu alaykum, {existing['name']}! ð\n\n"
-            "Siz SEH tizimiga ulangan siz.\n"
+            "Siz SEH tizimiga ulandingiz.\n"
             f"ð° Qarz: {money(client_debt(existing['id']))} so'm"
         )
         return
@@ -189,15 +228,15 @@ async def start(message: Message):
     )
 
     if not client_id:
-        await message.answer("â Bazaga qoâshishda xatolik yuz berdi.")
+        await message.answer("Xatolik: bazaga qo'shib bo'lmadi.")
         return
 
     await message.answer(
         f"Assalomu alaykum, {full_name}! ð\n\n"
-        "Siz SEH mijozlar bazasiga muvaffaqiyatli qoâshildingiz.\n"
+        "Siz SEH mijozlar bazasiga muvaffaqiyatli qo'shildingiz.\n"
         f"Telegram ID: {tg_id}\n"
         f"Username: @{username if username else 'yoâq'}\n\n"
-        "Endi sotuv va toâlovlar haqidagi xabarlar shu bot orqali keladi."
+        "Endi sotuv va to'lovlar haqidagi xabarlar shu bot orqali keladi."
     )
 
     try:
@@ -227,12 +266,14 @@ async def help_cmd(message: Message):
             "/addclient Ism | Telefon | TelegramID\n"
             "/sale Klient | Mahsulot | Summa | Izoh\n"
             "/pay Klient | Summa | Izoh\n"
+            "/payid TelegramID | Summa | Izoh\n"
             "/client Klient\n"
             "/clients\n"
             "/myid\n\n"
             "Misol:\n"
             "/sale Aliyev Ali | Eshik romi | 1800000 | Oq rang\n"
-            "/pay Aliyev Ali | 500000 | Naqd"
+            "/pay Aliyev Ali | 500000 | Naqd\n"
+            "Yoki: /payid 6105920151 | 500000 | Naqd"
         )
     else:
         await message.answer(
@@ -261,12 +302,12 @@ async def addclient_cmd(message: Message):
         try:
             telegram_id = int(parts[2])
         except ValueError:
-            await message.answer("â Telegram ID raqam boâlishi kerak.")
+            await message.answer("Xatolik: Telegram ID faqat raqam bo'lishi kerak.")
             return
 
     client_id = add_client(name, phone, telegram_id)
     if not client_id:
-        await message.answer("â Mijoz qoâshilmadi. Telegram ID mavjud boâlishi mumkin.")
+        await message.answer("Xatolik: mijoz qo'shilmadi. Bu Telegram ID bazada mavjud bo'lishi mumkin.")
         return
 
     await message.answer(
@@ -296,9 +337,9 @@ async def sale_cmd(message: Message):
         return
 
     try:
-        amount = float(parts[2].replace(" ", "").replace(",", ""))
+        amount = parse_amount(parts[2])
     except ValueError:
-        await message.answer("â Summa notoâgâri.")
+        await message.answer("Xatolik: summa noto'g'ri. Masalan: 5000000 yoki 5.000.000")
         return
 
     product = parts[1]
@@ -333,7 +374,7 @@ async def pay_cmd(message: Message):
     parts = parse_parts(message)
     if len(parts) < 2:
         await message.answer(
-            "Format:\n/pay Klient | Summa | Izoh"
+            "Format:\n/pay Mijoz | Summa | Izoh"
         )
         return
 
@@ -343,9 +384,9 @@ async def pay_cmd(message: Message):
         return
 
     try:
-        amount = float(parts[1].replace(" ", "").replace(",", ""))
+        amount = parse_amount(parts[1])
     except ValueError:
-        await message.answer("â Summa notoâgâri.")
+        await message.answer("Xatolik: summa noto'g'ri. Masalan: 5000000 yoki 5.000.000")
         return
 
     note = parts[2] if len(parts) > 2 else ""
@@ -368,6 +409,57 @@ async def pay_cmd(message: Message):
     )
 
 
+@dp.message(Command("payid"))
+async def payid_cmd(message: Message):
+    if not is_admin(message):
+        await message.answer("Xatolik: bu buyruq faqat admin uchun.")
+        return
+
+    parts = parse_parts(message)
+    if len(parts) < 2:
+        await message.answer(
+            "Format:\n/payid TelegramID | Summa | Izoh\n\n"
+            "Misol:\n/payid 6105920151 | 2000000 | Qarz"
+        )
+        return
+
+    try:
+        tg_id = int(parts[0])
+    except ValueError:
+        await message.answer("Telegram ID faqat raqamlardan iborat bo'lishi kerak.")
+        return
+
+    client = get_client_by_tg(tg_id)
+    if not client:
+        await message.answer(f"Bu Telegram ID bo'yicha mijoz topilmadi: {tg_id}")
+        return
+
+    try:
+        amount = parse_amount(parts[1])
+    except ValueError:
+        await message.answer("Summa noto'g'ri. Masalan: 2000000 yoki 2.000.000")
+        return
+
+    note = parts[2] if len(parts) > 2 else ""
+    add_payment(client["id"], amount, note)
+    debt = client_debt(client["id"])
+
+    await message.answer(
+        "To'lov yozildi!\n\n"
+        f"Mijoz: {client['name']}\n"
+        f"To'lov: {money(amount)} so'm\n"
+        f"Qolgan qarz: {money(debt)} so'm"
+    )
+
+    await notify_client(
+        client,
+        "SEH CRM â to'lov qabul qilindi\n\n"
+        f"To'lov: {money(amount)} so'm\n"
+        f"Qolgan qarzingiz: {money(debt)} so'm"
+        + (f"\nIzoh: {note}" if note else "")
+    )
+
+
 @dp.message(Command("client"))
 async def client_info(message: Message):
     if not is_admin(message):
@@ -376,12 +468,12 @@ async def client_info(message: Message):
 
     parts = parse_parts(message)
     if not parts:
-        await message.answer("Format: /client Klient")
+        await message.answer("Format: /client Mijoz")
         return
 
     client = find_client(parts[0])
     if not client:
-        await message.answer("â Klient topilmadi.")
+        await message.answer("Xatolik: mijoz topilmadi.")
         return
 
     await message.answer(
