@@ -133,7 +133,6 @@ async def start(message: Message):
             f"Siz SEH tizimiga ulangan siz.\n"
             f"Qarz: {client_debt(existing['id']):,.0f} so'm"
         )
-    else:
         await full_name = message.from_user.full_name
 
     add_client(
