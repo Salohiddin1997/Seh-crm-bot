@@ -10,7 +10,7 @@ from aiogram.types import Message
 # =========================
 # SOZLAMALAR
 # =========================
-BOT_TOKEN = "PASTE_YOUR_NEW_BOT_TOKEN_HERE"
+BOT_TOKEN = "8669780668:AAG_sq3lWprck6i4miJoIb1RBVKMHZuBp48"
 ADMIN_ID = 0  # Sizning Telegram ID'ingizni shu yerga yozing
 
 DB_FILE = "seh_crm.db"
