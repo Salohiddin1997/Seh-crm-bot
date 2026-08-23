@@ -134,13 +134,31 @@ async def start(message: Message):
             f"Qarz: {client_debt(existing['id']):,.0f} so'm"
         )
     else:
-        await message.answer(
-            "Assalomu alaykum!\n\n"
-            "Sizning Telegram akkauntingiz hali SEH mijozlar bazasiga ulanmagan.\n"
-            f"Telegram ID: {tg_id}\n"
-            f"Username: @{username if username else 'yo‘q'}\n\n"
-            "Admin sizni bazaga ulaganidan keyin sotuv va to‘lov xabarlari shu bot orqali keladi."
-        )
+        await full_name = message.from_user.full_name
+
+    add_client(
+
+        name=full_name,
+
+        phone=None,
+
+        telegram_id=tg_id
+
+    )
+
+    await message.answer(
+
+        f"Assalomu alaykum, {full_name}! 👋\n\n"
+
+        "Siz SEH mijozlar bazasiga muvaffaqiyatli qo‘shildingiz.\n"
+
+        f"Telegram ID: {tg_id}\n"
+
+        f"Username: @{username if username else 'yo‘q'}\n\n"
+
+        "Endi sotuv va to‘lovlar haqidagi xabarlar shu bot orqali keladi."
+
+    )
 
 
 @dp.message(Command("myid"))
