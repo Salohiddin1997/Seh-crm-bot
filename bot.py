@@ -1,606 +1,449 @@
-import asyncio
-import logging
-import os
-import sqlite3
+from flask import Flask, request, redirect, session, flash
+import sqlite3, os, hashlib
 from datetime import datetime
 
-from aiogram import Bot, Dispatcher
-from aiogram.filters import Command
-from aiogram.types import Message
-
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-ADMIN_ID = int(os.getenv("ADMIN_ID", "294495137"))
-DB_FILE = "seh_crm.db"
-
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN Railway Variables ichida berilmagan!")
-
-logging.basicConfig(level=logging.INFO)
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+app = Flask(__name__)
+app.secret_key = os.environ.get("SEH_SECRET", "change-this-secret")
+DB = "seh_ombor.db"
 
 
 def db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    c = sqlite3.connect(DB)
+    c.row_factory = sqlite3.Row
+    return c
 
 
-def init_db():
-    conn = db()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS clients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            phone TEXT,
-            telegram_id INTEGER UNIQUE,
-            username TEXT,
-            created_at TEXT NOT NULL
-        )
+def init():
+    c = db()
+    c.executescript("""
+    CREATE TABLE IF NOT EXISTS users(
+        id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT, role TEXT
+    );
+    CREATE TABLE IF NOT EXISTS products(
+        id INTEGER PRIMARY KEY, name TEXT, unit TEXT,
+        qty REAL DEFAULT 0, cost REAL DEFAULT 0, price REAL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS workers(
+        id INTEGER PRIMARY KEY, name TEXT, phone TEXT, paid REAL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS payments(
+        id INTEGER PRIMARY KEY, worker_id INTEGER, amount REAL, note TEXT, created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS clients(
+        id INTEGER PRIMARY KEY, name TEXT, phone TEXT, debt REAL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS sales(
+        id INTEGER PRIMARY KEY, product_id INTEGER, client_id INTEGER,
+        qty REAL, price REAL, total REAL, created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS door_sales(
+        id INTEGER PRIMARY KEY,
+        sale_id INTEGER,
+        client_id INTEGER,
+        width REAL,
+        height REAL,
+        note TEXT,
+        created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS client_payments(
+        id INTEGER PRIMARY KEY, client_id INTEGER, amount REAL, note TEXT, created_at TEXT
+    );
     """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS sales (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id INTEGER NOT NULL,
-            product TEXT NOT NULL,
-            amount REAL NOT NULL DEFAULT 0,
-            note TEXT,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+    if not c.execute("SELECT 1 FROM users WHERE username='admin'").fetchone():
+        c.execute(
+            "INSERT INTO users(username,password,role) VALUES(?,?,?)",
+            ("admin", hashlib.sha256(b"admin123").hexdigest(), "admin")
         )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS payments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id INTEGER NOT NULL,
-            amount REAL NOT NULL DEFAULT 0,
-            note TEXT,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
-        )
-    """)
-    conn.commit()
-    conn.close()
+    c.commit()
+    c.close()
 
 
-def add_client(name, phone=None, telegram_id=None, username=None):
-    conn = db()
-    try:
-        cur = conn.execute(
-            """INSERT INTO clients
-            (name, phone, telegram_id, username, created_at)
-            VALUES (?, ?, ?, ?, ?)""",
-            (name, phone, telegram_id, username,
-             datetime.now().isoformat(timespec="seconds"))
-        )
-        conn.commit()
-        return cur.lastrowid
-    except sqlite3.IntegrityError:
-        return None
-    finally:
-        conn.close()
+init()
+
+STYLE = """<style>
+body{font-family:Arial;margin:0;background:#f3f4f6;color:#111827}
+header{background:#111827;color:white;padding:18px 24px;font-size:25px;font-weight:700}
+nav{background:white;padding:12px;display:flex;gap:8px;flex-wrap:wrap;border-bottom:1px solid #ddd}
+nav a{padding:10px 14px;border-radius:9px;text-decoration:none;color:#111;background:#e5e7eb}
+main{max-width:1200px;margin:auto;padding:20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}
+.card,.panel{background:white;border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 2px 8px #0001}
+.num{font-size:28px;font-weight:bold;margin-top:8px}
+input,select{padding:10px;border:1px solid #ccc;border-radius:8px;margin:4px;width:calc(100% - 16px)}
+button{padding:10px 14px;border:0;border-radius:8px;background:#111827;color:white;cursor:pointer}
+table{width:100%;border-collapse:collapse}
+td,th{padding:10px;border-bottom:1px solid #eee;text-align:left}
+.msg{padding:10px;background:#dcfce7;border-radius:8px;margin-bottom:10px}
+</style>"""
 
 
-def normalize_text(value):
-    """Ism qidirishda katta-kichik harf va ortiqcha bo'shliqlarni bir xil qiladi."""
-    return " ".join((value or "").strip().casefold().split())
-
-
-def parse_amount(value):
-    """5000000, 5 000 000, 5.000.000 va 5,000,000 ni qabul qiladi."""
-    raw = (value or "").strip()
-    cleaned = raw.replace(" ", "").replace("\u00a0", "")
-    if not cleaned:
-        raise ValueError
-
-    # O'zbek so'm summalarida nuqta/vergul minglik ajratgich bo'lishi mumkin.
-    if cleaned.count(".") > 1 or cleaned.count(",") > 1:
-        cleaned = cleaned.replace(".", "").replace(",", "")
-    elif "." in cleaned and "," in cleaned:
-        cleaned = cleaned.replace(".", "").replace(",", "")
-    elif "." in cleaned and len(cleaned.split(".")[-1]) == 3:
-        cleaned = cleaned.replace(".", "")
-    elif "," in cleaned and len(cleaned.split(",")[-1]) == 3:
-        cleaned = cleaned.replace(",", "")
-
-    amount = float(cleaned)
-    if amount <= 0:
-        raise ValueError
-    return amount
-
-
-def find_client(name_or_id):
-    """Avval Telegram ID, keyin ism bo'yicha mijozni topadi."""
-    value = (name_or_id or "").strip()
-    if value.isdigit():
-        client = get_client_by_tg(int(value))
-        if client:
-            return client
-
-    target = normalize_text(value)
-    conn = db()
-    clients = conn.execute("SELECT * FROM clients ORDER BY id DESC").fetchall()
-    conn.close()
-
-    # Avval aniq moslik, keyin qisman moslik.
-    for client in clients:
-        if normalize_text(client["name"]) == target:
-            return client
-    for client in clients:
-        if target and target in normalize_text(client["name"]):
-            return client
-    return None
-
-
-def get_client_by_tg(tg_id):
-    conn = db()
-    row = conn.execute(
-        "SELECT * FROM clients WHERE telegram_id = ? LIMIT 1",
-        (tg_id,)
-    ).fetchone()
-    conn.close()
-    return row
-
-
-def client_debt(client_id):
-    conn = db()
-    sold = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) AS total FROM sales WHERE client_id=?",
-        (client_id,)
-    ).fetchone()["total"]
-    paid = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE client_id=?",
-        (client_id,)
-    ).fetchone()["total"]
-    conn.close()
-    return float(sold or 0) - float(paid or 0)
-
-
-def add_sale(client_id, product, amount, note=""):
-    conn = db()
-    conn.execute(
-        """INSERT INTO sales
-           (client_id, product, amount, note, created_at)
-           VALUES (?, ?, ?, ?, ?)""",
-        (client_id, product, amount, note,
-         datetime.now().isoformat(timespec="seconds"))
+def page(title, body):
+    nav = "" if not session.get("user") else """<nav>
+    <a href="/">🏠 Bosh sahifa</a>
+    <a href="/stock">📦 Ombor</a>
+    <a href="/workers">👷 Ishchilar</a>
+    <a href="/clients">👥 Klientlar</a>
+    <a href="/sales">🧾 Sotuv</a>
+    <a href="/door-sales">🚪 Eshik sotish</a>
+    <a href="/logout">🚪 Chiqish</a>
+    </nav>"""
+    messages = "".join(
+        f"<div class='msg'>{m}</div>" for m in session.pop("_flashes", [])
     )
-    conn.commit()
-    conn.close()
-
-
-def add_payment(client_id, amount, note=""):
-    conn = db()
-    conn.execute(
-        """INSERT INTO payments
-           (client_id, amount, note, created_at)
-           VALUES (?, ?, ?, ?)""",
-        (client_id, amount, note,
-         datetime.now().isoformat(timespec="seconds"))
-    )
-    conn.commit()
-    conn.close()
-
-
-def is_admin(message: Message):
-    return bool(message.from_user and message.from_user.id == ADMIN_ID)
-
-
-def money(value):
-    return f"{float(value):,.0f}".replace(",", " ")
-
-
-def parse_parts(message: Message):
-    text = message.text or ""
-    parts = text.split(maxsplit=1)
-    if len(parts) < 2:
-        return []
-    return [x.strip() for x in parts[1].split("|")]
-
-
-async def notify_client(client, text):
-    if not client["telegram_id"]:
-        return
-    try:
-        await bot.send_message(client["telegram_id"], text)
-    except Exception as e:
-        logging.warning("Mijozga xabar yuborilmadi: %s", e)
-
-
-@dp.message(Command("start"))
-async def start(message: Message):
-    tg_id = message.from_user.id
-    username = message.from_user.username or ""
-    existing = get_client_by_tg(tg_id)
-
-    if existing:
-        await message.answer(
-            f"Assalomu alaykum, {existing['name']}! 👋\n\n"
-            "Siz SEH tizimiga ulandingiz.\n"
-            f"💰 Qarz: {money(client_debt(existing['id']))} so'm"
-        )
-        return
-
-    full_name = message.from_user.full_name or "Noma'lum"
-    client_id = add_client(
-        full_name, None, tg_id, username
-    )
-
-    if not client_id:
-        await message.answer("Xatolik: bazaga qo'shib bo'lmadi.")
-        return
-
-    await message.answer(
-        f"Assalomu alaykum, {full_name}! 👋\n\n"
-        "Siz SEH mijozlar bazasiga muvaffaqiyatli qo'shildingiz.\n"
-        f"Telegram ID: {tg_id}\n"
-        f"Username: @{username if username else 'yo‘q'}\n\n"
-        "Endi sotuv va to'lovlar haqidagi xabarlar shu bot orqali keladi."
-    )
-
-    try:
-        await bot.send_message(
-            ADMIN_ID,
-            "🆕 Yangi mijoz botga qo‘shildi!\n\n"
-            f"👤 Ism: {full_name}\n"
-            f"🆔 Telegram ID: {tg_id}\n"
-            f"🔗 Username: @{username if username else 'yo‘q'}"
-        )
-    except Exception:
-        pass
-
-
-@dp.message(Command("myid"))
-async def myid(message: Message):
-    await message.answer(
-        f"Sizning Telegram ID'ingiz: {message.from_user.id}"
+    return (
+        "<html><head><meta charset='utf-8'><title>SEH OMBOR</title>"
+        + STYLE + "</head><body><header>🏭 SEH OMBOR</header>"
+        + nav + "<main><h2>" + title + "</h2>" + messages + body
+        + "</main></body></html>"
     )
 
 
-@dp.message(Command("help"))
-async def help_cmd(message: Message):
-    if is_admin(message):
-        await message.answer(
-            "SEH CRM buyruqlari:\n\n"
-            "/addclient Ism | Telefon | TelegramID\n"
-            "/sale Klient | Mahsulot | Summa | Izoh\n"
-            "/door Klient | O‘lcham | Summa | Izoh\n"
-            "/pay Klient | Summa | Izoh\n"
-            "/payid TelegramID | Summa | Izoh\n"
-            "/client Klient\n"
-            "/clients\n"
-            "/myid\n"
-            "/resetdata HA — test sotuv va to‘lovlarni tozalash\n\n"
-            "Misol:\n"
-            "/sale Aliyev Ali | Eshik romi | 1800000 | Oq rang\n"
-            "/pay Aliyev Ali | 500000 | Naqd\n"
-            "Yoki: /payid 6105920151 | 500000 | Naqd"
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        u = request.form["username"]
+        p = hashlib.sha256(request.form["password"].encode()).hexdigest()
+        c = db()
+        row = c.execute(
+            "SELECT * FROM users WHERE username=? AND password=?", (u, p)
+        ).fetchone()
+        c.close()
+        if row:
+            session["user"] = row["username"]
+            session["role"] = row["role"]
+            return redirect("/")
+        flash("Login yoki parol xato")
+    return page("Kirish", """<div class='panel' style='max-width:420px;margin:auto'>
+    <form method='post'>
+    <input name='username' placeholder='Login' required>
+    <input name='password' type='password' placeholder='Parol' required>
+    <button>Kirish</button>
+    <p>Demo admin: <b>admin</b> / <b>admin123</b></p>
+    </form></div>""")
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/login")
+
+
+@app.before_request
+def protect():
+    if request.endpoint not in ("login", "static") and not session.get("user"):
+        return redirect("/login")
+
+
+@app.route("/")
+def home():
+    c = db()
+    products = c.execute("SELECT COUNT(*) n FROM products").fetchone()["n"]
+    workers = c.execute("SELECT COUNT(*) n FROM workers").fetchone()["n"]
+    clients = c.execute("SELECT COUNT(*) n FROM clients").fetchone()["n"]
+    pay = c.execute("SELECT COALESCE(SUM(amount),0) n FROM payments").fetchone()["n"]
+    sales = c.execute("SELECT COALESCE(SUM(total),0) n FROM sales").fetchone()["n"]
+    c.close()
+    return page("Bosh sahifa", f"""<div class='grid'>
+    <div class='card'>📦 Mahsulotlar<div class='num'>{products}</div></div>
+    <div class='card'>👷 Ishchilar<div class='num'>{workers}</div></div>
+    <div class='card'>👥 Klientlar<div class='num'>{clients}</div></div>
+    <div class='card'>💰 Ishchilarga berilgan<div class='num'>{pay:,.0f} so'm</div></div>
+    <div class='card'>🧾 Jami sotuv<div class='num'>{sales:,.0f} so'm</div></div>
+    </div><div class='panel'><b>Admin:</b> {session['user']}</div>""")
+
+
+@app.route("/stock", methods=["GET", "POST"])
+def stock():
+    c = db()
+    if request.method == "POST":
+        c.execute(
+            "INSERT INTO products(name,unit,qty,cost,price) VALUES(?,?,?,?,?)",
+            (request.form["name"], request.form["unit"],
+             float(request.form["qty"] or 0),
+             float(request.form["cost"] or 0),
+             float(request.form["price"] or 0))
         )
-    else:
-        await message.answer(
-            "SEH bot.\n\n/start — tizimga ulanish\n/myid — Telegram ID"
-        )
-
-
-@dp.message(Command("addclient"))
-async def addclient_cmd(message: Message):
-    if not is_admin(message):
-        await message.answer("❌ Bu buyruq faqat admin uchun.")
-        return
-
-    parts = parse_parts(message)
-    if not parts or not parts[0]:
-        await message.answer(
-            "Format:\n/addclient Ism | Telefon | TelegramID"
-        )
-        return
-
-    name = parts[0]
-    phone = parts[1] if len(parts) > 1 and parts[1] else None
-    telegram_id = None
-
-    if len(parts) > 2 and parts[2]:
-        try:
-            telegram_id = int(parts[2])
-        except ValueError:
-            await message.answer("Xatolik: Telegram ID faqat raqam bo'lishi kerak.")
-            return
-
-    client_id = add_client(name, phone, telegram_id)
-    if not client_id:
-        await message.answer("Xatolik: mijoz qo'shilmadi. Bu Telegram ID bazada mavjud bo'lishi mumkin.")
-        return
-
-    await message.answer(
-        "✅ Mijoz qo‘shildi!\n\n"
-        f"👤 Ism: {name}\n"
-        f"📞 Telefon: {phone or '—'}\n"
-        f"🆔 Telegram ID: {telegram_id or '—'}"
+        c.commit()
+    rows = c.execute("SELECT * FROM products ORDER BY id DESC").fetchall()
+    c.close()
+    body = """<div class='panel'><form method='post'>
+    <input name='name' placeholder='Mahsulot nomi' required>
+    <select name='unit'><option>kg</option><option>dona</option></select>
+    <input name='qty' type='number' step='0.01' placeholder='Boshlang‘ich qoldiq'>
+    <input name='cost' type='number' step='0.01' placeholder='Tannarx'>
+    <input name='price' type='number' step='0.01' placeholder='Sotuv narxi'>
+    <button>+ Mahsulot qo‘shish</button></form></div>
+    <div class='panel'><table><tr><th>Mahsulot</th><th>Birlik</th>
+    <th>Qoldiq</th><th>Tannarx</th><th>Sotuv</th></tr>"""
+    body += "".join(
+        f"<tr><td>{r['name']}</td><td>{r['unit']}</td><td>{r['qty']}</td>"
+        f"<td>{r['cost']:,.0f}</td><td>{r['price']:,.0f}</td></tr>"
+        for r in rows
     )
+    return page("📦 Ombor", body + "</table></div>")
 
 
-@dp.message(Command("sale"))
-async def sale_cmd(message: Message):
-    if not is_admin(message):
-        await message.answer("❌ Bu buyruq faqat admin uchun.")
-        return
-
-    parts = parse_parts(message)
-    if len(parts) < 3:
-        await message.answer(
-            "Format:\n/sale Klient | Mahsulot | Summa | Izoh"
+@app.route("/workers", methods=["GET", "POST"])
+def workers():
+    c = db()
+    if request.method == "POST":
+        c.execute(
+            "INSERT INTO workers(name,phone) VALUES(?,?)",
+            (request.form["name"], request.form["phone"])
         )
-        return
+        c.commit()
+    rows = c.execute("SELECT * FROM workers ORDER BY id DESC").fetchall()
+    c.close()
+    body = """<div class='panel'><form method='post'>
+    <input name='name' placeholder='Ism familiya' required>
+    <input name='phone' placeholder='Telefon raqam' required>
+    <button>+ Ishchi qo‘shish</button></form></div>
+    <div class='panel'><table><tr><th>Ishchi</th><th>Telefon</th>
+    <th>Jami berilgan</th><th>Pul berish</th></tr>"""
+    for r in rows:
+        body += f"""<tr><td>{r['name']}</td><td>{r['phone']}</td>
+        <td>{r['paid']:,.0f} so'm</td><td><form method='post' action='/pay/{r['id']}'>
+        <input name='amount' type='number' step='0.01' placeholder='Summa' required>
+        <input name='note' placeholder='Izoh'><button>+ Pul berish</button>
+        </form></td></tr>"""
+    return page("👷 Ishchilar", body + "</table></div>")
 
-    client = find_client(parts[0])
+
+@app.post("/pay/<int:wid>")
+def pay(wid):
+    amount = float(request.form["amount"])
+    note = request.form.get("note", "")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    c = db()
+    w = c.execute("SELECT * FROM workers WHERE id=?", (wid,)).fetchone()
+    if not w or amount <= 0:
+        c.close()
+        flash("Ishchi yoki summa noto‘g‘ri.")
+        return redirect("/workers")
+    c.execute(
+        "INSERT INTO payments(worker_id,amount,note,created_at) VALUES(?,?,?,?)",
+        (wid, amount, note, now)
+    )
+    c.execute("UPDATE workers SET paid=paid+? WHERE id=?", (amount, wid))
+    c.commit()
+    c.close()
+    flash(f"{w['name']} ga {amount:,.0f} so'm qayd qilindi.")
+    return redirect("/workers")
+
+
+@app.route("/clients", methods=["GET", "POST"])
+def clients():
+    c = db()
+    if request.method == "POST":
+        c.execute(
+            "INSERT INTO clients(name,phone) VALUES(?,?)",
+            (request.form["name"], request.form["phone"])
+        )
+        c.commit()
+    rows = c.execute("SELECT * FROM clients ORDER BY id DESC").fetchall()
+    body = """<div class='panel'><form method='post'>
+    <input name='name' placeholder='Klient nomi' required>
+    <input name='phone' placeholder='Telefon'>
+    <button>+ Klient qo‘shish</button></form></div>
+    <div class='panel'><table><tr><th>Klient</th><th>Telefon</th>
+    <th>Qarz</th><th>Pul qabul qilish</th></tr>"""
+    for r in rows:
+        body += f"""<tr><td>{r['name']}</td><td>{r['phone']}</td>
+        <td><b>{r['debt']:,.0f} so'm</b></td><td>
+        <form method='post' action='/client-pay/{r['id']}'>
+        <input name='amount' type='number' step='0.01' min='0.01'
+        placeholder='To‘langan summa' required>
+        <input name='note' placeholder='Izoh'>
+        <button>💵 Pul qabul qilish</button></form></td></tr>"""
+    c.close()
+    return page("👥 Klientlar", body + "</table></div>")
+
+
+@app.post("/client-pay/<int:cid>")
+def client_pay(cid):
+    amount = float(request.form["amount"])
+    note = request.form.get("note", "")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    c = db()
+    client = c.execute("SELECT * FROM clients WHERE id=?", (cid,)).fetchone()
     if not client:
-        await message.answer(f"❌ '{parts[0]}' nomli mijoz topilmadi.")
-        return
-
-    try:
-        amount = parse_amount(parts[2])
-    except ValueError:
-        await message.answer("Xatolik: summa noto'g'ri. Masalan: 5000000 yoki 5.000.000")
-        return
-
-    product = parts[1]
-    note = parts[3] if len(parts) > 3 else ""
-    add_sale(client["id"], product, amount, note)
-    debt = client_debt(client["id"])
-
-    await message.answer(
-        "✅ Sotuv yozildi!\n\n"
-        f"👤 Mijoz: {client['name']}\n"
-        f"📦 Mahsulot: {product}\n"
-        f"💵 Summa: {money(amount)} so‘m\n"
-        f"💰 Qolgan qarz: {money(debt)} so‘m"
+        c.close()
+        flash("Klient topilmadi.")
+        return redirect("/clients")
+    if amount <= 0 or amount > client["debt"]:
+        c.close()
+        flash("To‘lov summasi noto‘g‘ri.")
+        return redirect("/clients")
+    c.execute(
+        "INSERT INTO client_payments(client_id,amount,note,created_at) VALUES(?,?,?,?)",
+        (cid, amount, note, now)
     )
-
-    await notify_client(
-        client,
-        "🧾 SEH — yangi sotuv\n\n"
-        f"📦 Mahsulot: {product}\n"
-        f"💵 Summa: {money(amount)} so‘m\n"
-        f"💰 Qolgan qarzingiz: {money(debt)} so‘m"
-        + (f"\n📝 Izoh: {note}" if note else "")
-    )
+    c.execute("UPDATE clients SET debt=debt-? WHERE id=?", (amount, cid))
+    c.commit()
+    c.close()
+    flash(f"{client['name']} dan {amount:,.0f} so'm qabul qilindi.")
+    return redirect("/clients")
 
 
 
-@dp.message(Command("door"))
-async def door_sale_cmd(message: Message):
-    """Tayyor eshik sotuvini qayd qiladi. Eshik omborga qo'shilmaydi."""
-    if not is_admin(message):
-        await message.answer("❌ Bu buyruq faqat admin uchun.")
-        return
+@app.route("/door-sales", methods=["GET", "POST"])
+def door_sales():
+    c = db()
 
-    parts = parse_parts(message)
-    if len(parts) < 3:
-        await message.answer(
-            "🚪 Eshik sotish formati:\n"
-            "/door Klient | O‘lcham | Summa | Izoh\n\n"
-            "Misol:\n"
-            "/door Aliyev Ali | 2000x500 | 1000000 | Oq eshik"
-        )
-        return
+    if request.method == "POST":
+        cid = request.form.get("client_id") or None
+        width = request.form.get("width", "").strip()
+        height = request.form.get("height", "").strip()
+        price_raw = request.form.get("price", "").strip()
+        note = request.form.get("note", "").strip()
 
-    client = find_client(parts[0])
-    if not client:
-        await message.answer(f"❌ '{parts[0]}' nomli mijoz topilmadi.")
-        return
+        if not width or not height or not price_raw:
+            flash("Eshik o‘lchami va narxi to‘ldirilishi kerak.")
+        else:
+            try:
+                width_n = float(width)
+                height_n = float(height)
+                price = float(price_raw)
+            except ValueError:
+                width_n = height_n = price = -1
 
-    size = parts[1]
-    try:
-        amount = parse_amount(parts[2])
-    except ValueError:
-        await message.answer(
-            "❌ Summa noto‘g‘ri. Masalan: 1000000 yoki 1.000.000"
-        )
-        return
+            if width_n <= 0 or height_n <= 0 or price <= 0:
+                flash("O‘lcham va narx noto‘g‘ri.")
+            else:
+                product_name = f"Eshik {width}×{height}"
+                # Eshik alohida sotuv sifatida yoziladi; ombordagi products qty o‘zgarmaydi.
+                c.execute(
+                    """INSERT INTO sales(product_id,client_id,qty,price,total,created_at)
+                       VALUES(NULL,?,?,?,?,?)""",
+                    (
+                        cid,
+                        1,
+                        price,
+                        price,
+                        datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    ),
+                )
+                sale_id = c.lastrowid
 
-    note = parts[3] if len(parts) > 3 else ""
-    product = f"Eshik {size}"
-    add_sale(client["id"], product, amount, note)
-    debt = client_debt(client["id"])
+                # Eshik ma'lumotlarini alohida jadvalda saqlash.
+                c.execute(
+                    """CREATE TABLE IF NOT EXISTS door_sales(
+                       id INTEGER PRIMARY KEY,
+                       sale_id INTEGER,
+                       client_id INTEGER,
+                       width REAL,
+                       height REAL,
+                       note TEXT,
+                       created_at TEXT
+                    )"""
+                )
+                c.execute(
+                    """INSERT INTO door_sales
+                       (sale_id,client_id,width,height,note,created_at)
+                       VALUES(?,?,?,?,?,?)""",
+                    (
+                        sale_id,
+                        cid,
+                        width_n,
+                        height_n,
+                        note,
+                        datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    ),
+                )
+                if cid:
+                    c.execute(
+                        "UPDATE clients SET debt=debt+? WHERE id=?",
+                        (price, cid),
+                    )
+                c.commit()
+                flash("🚪 Eshik sotuvi muvaffaqiyatli qayd qilindi.")
 
-    await message.answer(
-        "✅ Eshik sotuvi yozildi!\n\n"
-        f"👤 Klient: {client['name']}\n"
-        f"🚪 Eshik: {size}\n"
-        f"💵 Summa: {money(amount)} so‘m\n"
-        f"💰 Qolgan qarz: {money(debt)} so‘m"
-        + (f"\n📝 Izoh: {note}" if note else "")
-    )
-
-    await notify_client(
-        client,
-        "🧾 SEH — yangi eshik sotuvi\n\n"
-        f"🚪 Eshik: {size}\n"
-        f"💵 Summa: {money(amount)} so‘m\n"
-        f"💰 Qolgan qarzingiz: {money(debt)} so‘m"
-        + (f"\n📝 Izoh: {note}" if note else "")
-    )
-
-@dp.message(Command("pay"))
-async def pay_cmd(message: Message):
-    if not is_admin(message):
-        await message.answer("❌ Bu buyruq faqat admin uchun.")
-        return
-
-    parts = parse_parts(message)
-    if len(parts) < 2:
-        await message.answer(
-            "Format:\n/pay Mijoz | Summa | Izoh"
-        )
-        return
-
-    client = find_client(parts[0])
-    if not client:
-        await message.answer(f"❌ '{parts[0]}' nomli mijoz topilmadi.")
-        return
-
-    try:
-        amount = parse_amount(parts[1])
-    except ValueError:
-        await message.answer("Xatolik: summa noto'g'ri. Masalan: 5000000 yoki 5.000.000")
-        return
-
-    note = parts[2] if len(parts) > 2 else ""
-    add_payment(client["id"], amount, note)
-    debt = client_debt(client["id"])
-
-    await message.answer(
-        "✅ To‘lov yozildi!\n\n"
-        f"👤 Mijoz: {client['name']}\n"
-        f"💵 To‘lov: {money(amount)} so‘m\n"
-        f"💰 Qolgan qarz: {money(debt)} so‘m"
-    )
-
-    await notify_client(
-        client,
-        "💳 SEH — to‘lov qabul qilindi\n\n"
-        f"💵 To‘lov: {money(amount)} so‘m\n"
-        f"💰 Qolgan qarzingiz: {money(debt)} so‘m"
-        + (f"\n📝 Izoh: {note}" if note else "")
-    )
-
-
-@dp.message(Command("payid"))
-async def payid_cmd(message: Message):
-    if not is_admin(message):
-        await message.answer("Xatolik: bu buyruq faqat admin uchun.")
-        return
-
-    parts = parse_parts(message)
-    if len(parts) < 2:
-        await message.answer(
-            "Format:\n/payid TelegramID | Summa | Izoh\n\n"
-            "Misol:\n/payid 6105920151 | 2000000 | Qarz"
-        )
-        return
-
-    try:
-        tg_id = int(parts[0])
-    except ValueError:
-        await message.answer("Telegram ID faqat raqamlardan iborat bo'lishi kerak.")
-        return
-
-    client = get_client_by_tg(tg_id)
-    if not client:
-        await message.answer(f"Bu Telegram ID bo'yicha mijoz topilmadi: {tg_id}")
-        return
-
-    try:
-        amount = parse_amount(parts[1])
-    except ValueError:
-        await message.answer("Summa noto'g'ri. Masalan: 2000000 yoki 2.000.000")
-        return
-
-    note = parts[2] if len(parts) > 2 else ""
-    add_payment(client["id"], amount, note)
-    debt = client_debt(client["id"])
-
-    await message.answer(
-        "To'lov yozildi!\n\n"
-        f"Mijoz: {client['name']}\n"
-        f"To'lov: {money(amount)} so'm\n"
-        f"Qolgan qarz: {money(debt)} so'm"
-    )
-
-    await notify_client(
-        client,
-        "SEH CRM — to'lov qabul qilindi\n\n"
-        f"To'lov: {money(amount)} so'm\n"
-        f"Qolgan qarzingiz: {money(debt)} so'm"
-        + (f"\nIzoh: {note}" if note else "")
-    )
-
-
-@dp.message(Command("resetdata"))
-async def resetdata_cmd(message: Message):
-    if not is_admin(message):
-        await message.answer("❌ Bu buyruq faqat admin uchun.")
-        return
-
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) < 2 or parts[1].strip().upper() != "HA":
-        await message.answer(
-            "⚠️ Bu buyruq barcha sotuv va to‘lov yozuvlarini o‘chiradi.\n"
-            "Mijozlarning o‘zi saqlanib qoladi.\n\n"
-            "Tasdiqlash uchun yozing:\n"
-            "/resetdata HA"
-        )
-        return
-
-    conn = db()
-    conn.execute("DELETE FROM payments")
-    conn.execute("DELETE FROM sales")
-    conn.commit()
-    conn.close()
-
-    await message.answer(
-        "✅ Test ma’lumotlari tozalandi!\n\n"
-        "Mijozlar saqlanib qoldi.\n"
-        "Sotuvlar: 0\n"
-        "To‘lovlar: 0\n"
-        "Endi hisob-kitobni boshidan boshlashingiz mumkin."
-    )
-
-
-@dp.message(Command("client"))
-async def client_info(message: Message):
-    if not is_admin(message):
-        await message.answer("❌ Bu buyruq faqat admin uchun.")
-        return
-
-    parts = parse_parts(message)
-    if not parts:
-        await message.answer("Format: /client Mijoz")
-        return
-
-    client = find_client(parts[0])
-    if not client:
-        await message.answer("Xatolik: mijoz topilmadi.")
-        return
-
-    await message.answer(
-        f"👤 {client['name']}\n"
-        f"📞 {client['phone'] or '—'}\n"
-        f"🆔 Telegram ID: {client['telegram_id'] or '—'}\n"
-        f"🔗 Username: @{client['username'] if client['username'] else '—'}\n"
-        f"💰 Qarz: {money(client_debt(client['id']))} so‘m"
-    )
-
-
-@dp.message(Command("clients"))
-async def clients_cmd(message: Message):
-    if not is_admin(message):
-        await message.answer("❌ Bu buyruq faqat admin uchun.")
-        return
-
-    conn = db()
-    clients = conn.execute(
-        "SELECT * FROM clients ORDER BY id DESC"
+    cs = c.execute("SELECT * FROM clients ORDER BY name").fetchall()
+    rows = c.execute(
+        """SELECT d.*, c.name cn, s.price
+           FROM door_sales d
+           LEFT JOIN clients c ON c.id=d.client_id
+           JOIN sales s ON s.id=d.sale_id
+           ORDER BY d.id DESC LIMIT 50"""
     ).fetchall()
-    conn.close()
+    c.close()
 
-    if not clients:
-        await message.answer("Hozircha mijozlar yo‘q.")
-        return
+    body = """<div class='panel'><form method='post'>
+    <h3>🚪 Eshik sotish</h3>
+    <input name='width' type='number' step='0.01' placeholder='Eni (mm)' required>
+    <input name='height' type='number' step='0.01' placeholder='Bo‘yi (mm)' required>
+    <input name='price' type='number' step='0.01' placeholder='Narx' required>
+    <select name='client_id'><option value=''>Klientsiz</option>"""
+    body += "".join(
+        f"<option value='{c['id']}'>{c['name']}</option>" for c in cs
+    )
+    body += """</select>
+    <input name='note' placeholder='Izoh (rang, model va h.k.)'>
+    <button>🚪 Eshikni sotish</button>
+    </form></div>
+    <div class='panel'><h3>🚪 Eshik sotuvlari</h3><table>
+    <tr><th>Sana</th><th>O‘lcham</th><th>Klient</th><th>Summa</th><th>Izoh</th></tr>"""
+    body += "".join(
+        f"<tr><td>{r['created_at']}</td>"
+        f"<td>{r['width']:g} × {r['height']:g} mm</td>"
+        f"<td>{r['cn'] or ''}</td><td>{r['price']:,.0f}</td>"
+        f"<td>{r['note'] or ''}</td></tr>" for r in rows
+    )
+    body += "</table></div>"
+    return page("🚪 Eshik sotish", body)
 
-    text = "👥 SEH mijozlari:\n\n"
-    for i, client in enumerate(clients, 1):
-        text += f"{i}. {client['name']} — {money(client_debt(client['id']))} so‘m\n"
 
-    await message.answer(text[:4000])
-
-
-async def main():
-    init_db()
-    logging.info("SEH CRM bot ishga tushdi")
-    await dp.start_polling(bot)
+@app.route("/sales", methods=["GET", "POST"])
+def sales():
+    c = db()
+    if request.method == "POST":
+        p = c.execute(
+            "SELECT * FROM products WHERE id=?", (request.form["product_id"],)
+        ).fetchone()
+        qty = float(request.form["qty"])
+        if not p or qty <= 0 or qty > p["qty"]:
+            flash("Mahsulot yoki miqdor noto‘g‘ri.")
+        else:
+            price = float(request.form["price"] or p["price"])
+            cid = request.form.get("client_id") or None
+            total = qty * price
+            c.execute("UPDATE products SET qty=qty-? WHERE id=?", (qty, p["id"]))
+            c.execute(
+                """INSERT INTO sales(product_id,client_id,qty,price,total,created_at)
+                VALUES(?,?,?,?,?,?)""",
+                (p["id"], cid, qty, price, total,
+                 datetime.now().strftime("%Y-%m-%d %H:%M"))
+            )
+            if cid:
+                c.execute("UPDATE clients SET debt=debt+? WHERE id=?", (total, cid))
+            c.commit()
+            flash("Sotuv muvaffaqiyatli qayd qilindi.")
+    ps = c.execute("SELECT * FROM products").fetchall()
+    cs = c.execute("SELECT * FROM clients").fetchall()
+    ss = c.execute(
+        """SELECT s.*,p.name pn,c.name cn FROM sales s
+        JOIN products p ON p.id=s.product_id LEFT JOIN clients c ON c.id=s.client_id
+        ORDER BY s.id DESC LIMIT 50"""
+    ).fetchall()
+    c.close()
+    body = """<div class='panel'><form method='post'>
+    <select name='product_id'>""" + "".join(
+        f"<option value='{p['id']}'>{p['name']} ({p['qty']} {p['unit']})</option>"
+        for p in ps
+    ) + """</select>
+    <input name='qty' type='number' step='0.01' placeholder='Miqdor' required>
+    <input name='price' type='number' step='0.01' placeholder='Narx'>
+    <select name='client_id'><option value=''>Klientsiz</option>""" + "".join(
+        f"<option value='{c['id']}'>{c['name']}</option>" for c in cs
+    ) + """</select><button>− Ombordan chiqarish</button></form></div>
+    <div class='panel'><table><tr><th>Sana</th><th>Mahsulot</th>
+    <th>Miqdor</th><th>Klient</th><th>Summa</th></tr>"""
+    body += "".join(
+        f"<tr><td>{s['created_at']}</td><td>{s['pn']}</td><td>{s['qty']}</td>"
+        f"<td>{s['cn'] or ''}</td><td>{s['total']:,.0f}</td></tr>" for s in ss
+    )
+    return page("🧾 Sotuv / Chiqim", body + "</table></div>")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    app.run(host="0.0.0.0", port=5000, debug=False)
