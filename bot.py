@@ -216,9 +216,9 @@ async def start(message: Message):
 
     if existing:
         await message.answer(
-            f"Assalomu alaykum, {existing['name']}! ð\n\n"
+            f"Assalomu alaykum, {existing['name']}! 👋\n\n"
             "Siz SEH tizimiga ulandingiz.\n"
-            f"ð° Qarz: {money(client_debt(existing['id']))} so'm"
+            f"💰 Qarz: {money(client_debt(existing['id']))} so'm"
         )
         return
 
@@ -232,20 +232,20 @@ async def start(message: Message):
         return
 
     await message.answer(
-        f"Assalomu alaykum, {full_name}! ð\n\n"
+        f"Assalomu alaykum, {full_name}! 👋\n\n"
         "Siz SEH mijozlar bazasiga muvaffaqiyatli qo'shildingiz.\n"
         f"Telegram ID: {tg_id}\n"
-        f"Username: @{username if username else 'yoâq'}\n\n"
+        f"Username: @{username if username else 'yo‘q'}\n\n"
         "Endi sotuv va to'lovlar haqidagi xabarlar shu bot orqali keladi."
     )
 
     try:
         await bot.send_message(
             ADMIN_ID,
-            "ð Yangi mijoz botga qoâshildi!\n\n"
-            f"ð¤ Ism: {full_name}\n"
-            f"ð Telegram ID: {tg_id}\n"
-            f"ð Username: @{username if username else 'yoâq'}"
+            "🆕 Yangi mijoz botga qo‘shildi!\n\n"
+            f"👤 Ism: {full_name}\n"
+            f"🆔 Telegram ID: {tg_id}\n"
+            f"🔗 Username: @{username if username else 'yo‘q'}"
         )
     except Exception:
         pass
@@ -269,7 +269,8 @@ async def help_cmd(message: Message):
             "/payid TelegramID | Summa | Izoh\n"
             "/client Klient\n"
             "/clients\n"
-            "/myid\n\n"
+            "/myid\n"
+            "/resetdata HA — test sotuv va to‘lovlarni tozalash\n\n"
             "Misol:\n"
             "/sale Aliyev Ali | Eshik romi | 1800000 | Oq rang\n"
             "/pay Aliyev Ali | 500000 | Naqd\n"
@@ -277,14 +278,14 @@ async def help_cmd(message: Message):
         )
     else:
         await message.answer(
-            "SEH bot.\n\n/start â tizimga ulanish\n/myid â Telegram ID"
+            "SEH bot.\n\n/start — tizimga ulanish\n/myid — Telegram ID"
         )
 
 
 @dp.message(Command("addclient"))
 async def addclient_cmd(message: Message):
     if not is_admin(message):
-        await message.answer("â Bu buyruq faqat admin uchun.")
+        await message.answer("❌ Bu buyruq faqat admin uchun.")
         return
 
     parts = parse_parts(message)
@@ -311,17 +312,17 @@ async def addclient_cmd(message: Message):
         return
 
     await message.answer(
-        "â Mijoz qoâshildi!\n\n"
-        f"ð¤ Ism: {name}\n"
-        f"ð Telefon: {phone or 'â'}\n"
-        f"ð Telegram ID: {telegram_id or 'â'}"
+        "✅ Mijoz qo‘shildi!\n\n"
+        f"👤 Ism: {name}\n"
+        f"📞 Telefon: {phone or '—'}\n"
+        f"🆔 Telegram ID: {telegram_id or '—'}"
     )
 
 
 @dp.message(Command("sale"))
 async def sale_cmd(message: Message):
     if not is_admin(message):
-        await message.answer("â Bu buyruq faqat admin uchun.")
+        await message.answer("❌ Bu buyruq faqat admin uchun.")
         return
 
     parts = parse_parts(message)
@@ -333,7 +334,7 @@ async def sale_cmd(message: Message):
 
     client = find_client(parts[0])
     if not client:
-        await message.answer(f"â '{parts[0]}' nomli mijoz topilmadi.")
+        await message.answer(f"❌ '{parts[0]}' nomli mijoz topilmadi.")
         return
 
     try:
@@ -348,27 +349,27 @@ async def sale_cmd(message: Message):
     debt = client_debt(client["id"])
 
     await message.answer(
-        "â Sotuv yozildi!\n\n"
-        f"ð¤ Mijoz: {client['name']}\n"
-        f"ð¦ Mahsulot: {product}\n"
-        f"ðµ Summa: {money(amount)} soâm\n"
-        f"ð° Qolgan qarz: {money(debt)} soâm"
+        "✅ Sotuv yozildi!\n\n"
+        f"👤 Mijoz: {client['name']}\n"
+        f"📦 Mahsulot: {product}\n"
+        f"💵 Summa: {money(amount)} so‘m\n"
+        f"💰 Qolgan qarz: {money(debt)} so‘m"
     )
 
     await notify_client(
         client,
-        "ð§¾ SEH â yangi sotuv\n\n"
-        f"ð¦ Mahsulot: {product}\n"
-        f"ðµ Summa: {money(amount)} soâm\n"
-        f"ð° Qolgan qarzingiz: {money(debt)} soâm"
-        + (f"\nð Izoh: {note}" if note else "")
+        "🧾 SEH — yangi sotuv\n\n"
+        f"📦 Mahsulot: {product}\n"
+        f"💵 Summa: {money(amount)} so‘m\n"
+        f"💰 Qolgan qarzingiz: {money(debt)} so‘m"
+        + (f"\n📝 Izoh: {note}" if note else "")
     )
 
 
 @dp.message(Command("pay"))
 async def pay_cmd(message: Message):
     if not is_admin(message):
-        await message.answer("â Bu buyruq faqat admin uchun.")
+        await message.answer("❌ Bu buyruq faqat admin uchun.")
         return
 
     parts = parse_parts(message)
@@ -380,7 +381,7 @@ async def pay_cmd(message: Message):
 
     client = find_client(parts[0])
     if not client:
-        await message.answer(f"â '{parts[0]}' nomli mijoz topilmadi.")
+        await message.answer(f"❌ '{parts[0]}' nomli mijoz topilmadi.")
         return
 
     try:
@@ -394,18 +395,18 @@ async def pay_cmd(message: Message):
     debt = client_debt(client["id"])
 
     await message.answer(
-        "â Toâlov yozildi!\n\n"
-        f"ð¤ Mijoz: {client['name']}\n"
-        f"ðµ Toâlov: {money(amount)} soâm\n"
-        f"ð° Qolgan qarz: {money(debt)} soâm"
+        "✅ To‘lov yozildi!\n\n"
+        f"👤 Mijoz: {client['name']}\n"
+        f"💵 To‘lov: {money(amount)} so‘m\n"
+        f"💰 Qolgan qarz: {money(debt)} so‘m"
     )
 
     await notify_client(
         client,
-        "ð³ SEH â toâlov qabul qilindi\n\n"
-        f"ðµ Toâlov: {money(amount)} soâm\n"
-        f"ð° Qolgan qarzingiz: {money(debt)} soâm"
-        + (f"\nð Izoh: {note}" if note else "")
+        "💳 SEH — to‘lov qabul qilindi\n\n"
+        f"💵 To‘lov: {money(amount)} so‘m\n"
+        f"💰 Qolgan qarzingiz: {money(debt)} so‘m"
+        + (f"\n📝 Izoh: {note}" if note else "")
     )
 
 
@@ -453,17 +454,48 @@ async def payid_cmd(message: Message):
 
     await notify_client(
         client,
-        "SEH CRM â to'lov qabul qilindi\n\n"
+        "SEH CRM — to'lov qabul qilindi\n\n"
         f"To'lov: {money(amount)} so'm\n"
         f"Qolgan qarzingiz: {money(debt)} so'm"
         + (f"\nIzoh: {note}" if note else "")
     )
 
 
+@dp.message(Command("resetdata"))
+async def resetdata_cmd(message: Message):
+    if not is_admin(message):
+        await message.answer("❌ Bu buyruq faqat admin uchun.")
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or parts[1].strip().upper() != "HA":
+        await message.answer(
+            "⚠️ Bu buyruq barcha sotuv va to‘lov yozuvlarini o‘chiradi.\n"
+            "Mijozlarning o‘zi saqlanib qoladi.\n\n"
+            "Tasdiqlash uchun yozing:\n"
+            "/resetdata HA"
+        )
+        return
+
+    conn = db()
+    conn.execute("DELETE FROM payments")
+    conn.execute("DELETE FROM sales")
+    conn.commit()
+    conn.close()
+
+    await message.answer(
+        "✅ Test ma’lumotlari tozalandi!\n\n"
+        "Mijozlar saqlanib qoldi.\n"
+        "Sotuvlar: 0\n"
+        "To‘lovlar: 0\n"
+        "Endi hisob-kitobni boshidan boshlashingiz mumkin."
+    )
+
+
 @dp.message(Command("client"))
 async def client_info(message: Message):
     if not is_admin(message):
-        await message.answer("â Bu buyruq faqat admin uchun.")
+        await message.answer("❌ Bu buyruq faqat admin uchun.")
         return
 
     parts = parse_parts(message)
@@ -477,18 +509,18 @@ async def client_info(message: Message):
         return
 
     await message.answer(
-        f"ð¤ {client['name']}\n"
-        f"ð {client['phone'] or 'â'}\n"
-        f"ð Telegram ID: {client['telegram_id'] or 'â'}\n"
-        f"ð Username: @{client['username'] if client['username'] else 'â'}\n"
-        f"ð° Qarz: {money(client_debt(client['id']))} soâm"
+        f"👤 {client['name']}\n"
+        f"📞 {client['phone'] or '—'}\n"
+        f"🆔 Telegram ID: {client['telegram_id'] or '—'}\n"
+        f"🔗 Username: @{client['username'] if client['username'] else '—'}\n"
+        f"💰 Qarz: {money(client_debt(client['id']))} so‘m"
     )
 
 
 @dp.message(Command("clients"))
 async def clients_cmd(message: Message):
     if not is_admin(message):
-        await message.answer("â Bu buyruq faqat admin uchun.")
+        await message.answer("❌ Bu buyruq faqat admin uchun.")
         return
 
     conn = db()
@@ -498,12 +530,12 @@ async def clients_cmd(message: Message):
     conn.close()
 
     if not clients:
-        await message.answer("Hozircha mijozlar yoâq.")
+        await message.answer("Hozircha mijozlar yo‘q.")
         return
 
-    text = "ð¥ SEH mijozlari:\n\n"
+    text = "👥 SEH mijozlari:\n\n"
     for i, client in enumerate(clients, 1):
-        text += f"{i}. {client['name']} â {money(client_debt(client['id']))} soâm\n"
+        text += f"{i}. {client['name']} — {money(client_debt(client['id']))} so‘m\n"
 
     await message.answer(text[:4000])
 
