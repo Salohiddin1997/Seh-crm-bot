@@ -265,6 +265,7 @@ async def help_cmd(message: Message):
             "SEH CRM buyruqlari:\n\n"
             "/addclient Ism | Telefon | TelegramID\n"
             "/sale Klient | Mahsulot | Summa | Izoh\n"
+            "/door Klient | O‘lcham | Summa | Izoh\n"
             "/pay Klient | Summa | Izoh\n"
             "/payid TelegramID | Summa | Izoh\n"
             "/client Klient\n"
@@ -365,6 +366,61 @@ async def sale_cmd(message: Message):
         + (f"\n📝 Izoh: {note}" if note else "")
     )
 
+
+
+@dp.message(Command("door"))
+async def door_sale_cmd(message: Message):
+    """Tayyor eshik sotuvini qayd qiladi. Eshik omborga qo'shilmaydi."""
+    if not is_admin(message):
+        await message.answer("❌ Bu buyruq faqat admin uchun.")
+        return
+
+    parts = parse_parts(message)
+    if len(parts) < 3:
+        await message.answer(
+            "🚪 Eshik sotish formati:\n"
+            "/door Klient | O‘lcham | Summa | Izoh\n\n"
+            "Misol:\n"
+            "/door Aliyev Ali | 2000x500 | 1000000 | Oq eshik"
+        )
+        return
+
+    client = find_client(parts[0])
+    if not client:
+        await message.answer(f"❌ '{parts[0]}' nomli mijoz topilmadi.")
+        return
+
+    size = parts[1]
+    try:
+        amount = parse_amount(parts[2])
+    except ValueError:
+        await message.answer(
+            "❌ Summa noto‘g‘ri. Masalan: 1000000 yoki 1.000.000"
+        )
+        return
+
+    note = parts[3] if len(parts) > 3 else ""
+    product = f"Eshik {size}"
+    add_sale(client["id"], product, amount, note)
+    debt = client_debt(client["id"])
+
+    await message.answer(
+        "✅ Eshik sotuvi yozildi!\n\n"
+        f"👤 Klient: {client['name']}\n"
+        f"🚪 Eshik: {size}\n"
+        f"💵 Summa: {money(amount)} so‘m\n"
+        f"💰 Qolgan qarz: {money(debt)} so‘m"
+        + (f"\n📝 Izoh: {note}" if note else "")
+    )
+
+    await notify_client(
+        client,
+        "🧾 SEH — yangi eshik sotuvi\n\n"
+        f"🚪 Eshik: {size}\n"
+        f"💵 Summa: {money(amount)} so‘m\n"
+        f"💰 Qolgan qarzingiz: {money(debt)} so‘m"
+        + (f"\n📝 Izoh: {note}" if note else "")
+    )
 
 @dp.message(Command("pay"))
 async def pay_cmd(message: Message):
