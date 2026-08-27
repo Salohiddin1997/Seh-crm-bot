@@ -32,10 +32,6 @@ def init():
     CREATE TABLE IF NOT EXISTS clients(
         id INTEGER PRIMARY KEY, name TEXT, phone TEXT, debt REAL DEFAULT 0
     );
-    CREATE TABLE IF NOT EXISTS sales(
-        id INTEGER PRIMARY KEY, product_id INTEGER, client_id INTEGER,
-        qty REAL, price REAL, total REAL, created_at TEXT
-    );
     CREATE TABLE IF NOT EXISTS door_sales(
         id INTEGER PRIMARY KEY,
         sale_id INTEGER,
@@ -44,6 +40,11 @@ def init():
         height REAL,
         note TEXT,
         created_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS sales(
+        id INTEGER PRIMARY KEY, product_id INTEGER, client_id INTEGER,
+        qty REAL, price REAL, total REAL, created_at TEXT
     );
     CREATE TABLE IF NOT EXISTS client_payments(
         id INTEGER PRIMARY KEY, client_id INTEGER, amount REAL, note TEXT, created_at TEXT
@@ -84,7 +85,6 @@ def page(title, body):
     <a href="/workers">👷 Ishchilar</a>
     <a href="/clients">👥 Klientlar</a>
     <a href="/sales">🧾 Sotuv</a>
-    <a href="/door-sales">🚪 Eshik sotish</a>
     <a href="/logout">🚪 Chiqish</a>
     </nav>"""
     messages = "".join(
@@ -285,164 +285,199 @@ def client_pay(cid):
     return redirect("/clients")
 
 
-
-@app.route("/door-sales", methods=["GET", "POST"])
-def door_sales():
+@app.route("/sales", methods=["GET", "POST"])
+def sales():
     c = db()
 
     if request.method == "POST":
+        sale_type = request.form.get("sale_type", "stock")
         cid = request.form.get("client_id") or None
-        width = request.form.get("width", "").strip()
-        height = request.form.get("height", "").strip()
-        price_raw = request.form.get("price", "").strip()
-        note = request.form.get("note", "").strip()
 
-        if not width or not height or not price_raw:
-            flash("Eshik o‘lchami va narxi to‘ldirilishi kerak.")
-        else:
+        if sale_type == "door":
+            width = request.form.get("width", "").strip()
+            height = request.form.get("height", "").strip()
+            price_raw = request.form.get("door_price", "").strip()
+            note = request.form.get("note", "").strip()
+
             try:
                 width_n = float(width)
                 height_n = float(height)
                 price = float(price_raw)
-            except ValueError:
+            except (ValueError, TypeError):
                 width_n = height_n = price = -1
 
             if width_n <= 0 or height_n <= 0 or price <= 0:
-                flash("O‘lcham va narx noto‘g‘ri.")
+                flash("Eshik o‘lchami va narxi noto‘g‘ri.")
             else:
-                product_name = f"Eshik {width}×{height}"
-                # Eshik alohida sotuv sifatida yoziladi; ombordagi products qty o‘zgarmaydi.
+                now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+                # Eshik ombor mahsuloti emas:
+                # products jadvalidagi qoldiq umuman kamaytirilmaydi.
                 c.execute(
-                    """INSERT INTO sales(product_id,client_id,qty,price,total,created_at)
+                    """INSERT INTO sales
+                       (product_id,client_id,qty,price,total,created_at)
                        VALUES(NULL,?,?,?,?,?)""",
-                    (
-                        cid,
-                        1,
-                        price,
-                        price,
-                        datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    ),
+                    (cid, 1, price, price, now),
                 )
                 sale_id = c.lastrowid
 
-                # Eshik ma'lumotlarini alohida jadvalda saqlash.
-                c.execute(
-                    """CREATE TABLE IF NOT EXISTS door_sales(
-                       id INTEGER PRIMARY KEY,
-                       sale_id INTEGER,
-                       client_id INTEGER,
-                       width REAL,
-                       height REAL,
-                       note TEXT,
-                       created_at TEXT
-                    )"""
-                )
                 c.execute(
                     """INSERT INTO door_sales
                        (sale_id,client_id,width,height,note,created_at)
                        VALUES(?,?,?,?,?,?)""",
-                    (
-                        sale_id,
-                        cid,
-                        width_n,
-                        height_n,
-                        note,
-                        datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    ),
+                    (sale_id, cid, width_n, height_n, note, now),
                 )
+
                 if cid:
                     c.execute(
                         "UPDATE clients SET debt=debt+? WHERE id=?",
                         (price, cid),
                     )
+
                 c.commit()
                 flash("🚪 Eshik sotuvi muvaffaqiyatli qayd qilindi.")
 
+        else:
+            product_id = request.form.get("product_id")
+            p = c.execute(
+                "SELECT * FROM products WHERE id=?",
+                (product_id,),
+            ).fetchone()
+
+            try:
+                qty = float(request.form.get("qty", 0))
+                price = float(request.form.get("stock_price") or p["price"])
+            except (ValueError, TypeError, KeyError):
+                qty = -1
+                price = 0
+
+            if not p:
+                flash("Mahsulot topilmadi.")
+            elif qty <= 0 or qty > p["qty"]:
+                flash("Omborda yetarli qoldiq yo‘q.")
+            else:
+                total = qty * price
+                now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+                c.execute(
+                    "UPDATE products SET qty=qty-? WHERE id=?",
+                    (qty, p["id"]),
+                )
+                c.execute(
+                    """INSERT INTO sales
+                       (product_id,client_id,qty,price,total,created_at)
+                       VALUES(?,?,?,?,?,?)""",
+                    (p["id"], cid, qty, price, total, now),
+                )
+
+                if cid:
+                    c.execute(
+                        "UPDATE clients SET debt=debt+? WHERE id=?",
+                        (total, cid),
+                    )
+
+                c.commit()
+                flash("Sotuv muvaffaqiyatli qayd qilindi.")
+
+    ps = c.execute("SELECT * FROM products ORDER BY name").fetchall()
     cs = c.execute("SELECT * FROM clients ORDER BY name").fetchall()
-    rows = c.execute(
-        """SELECT d.*, c.name cn, s.price
+
+    stock_sales = c.execute(
+        """SELECT s.*,p.name pn,c.name cn
+           FROM sales s
+           JOIN products p ON p.id=s.product_id
+           LEFT JOIN clients c ON c.id=s.client_id
+           ORDER BY s.id DESC LIMIT 50"""
+    ).fetchall()
+
+    door_sales = c.execute(
+        """SELECT d.*,c.name cn,s.price
            FROM door_sales d
            LEFT JOIN clients c ON c.id=d.client_id
            JOIN sales s ON s.id=d.sale_id
            ORDER BY d.id DESC LIMIT 50"""
     ).fetchall()
+
     c.close()
 
-    body = """<div class='panel'><form method='post'>
-    <h3>🚪 Eshik sotish</h3>
-    <input name='width' type='number' step='0.01' placeholder='Eni (mm)' required>
-    <input name='height' type='number' step='0.01' placeholder='Bo‘yi (mm)' required>
-    <input name='price' type='number' step='0.01' placeholder='Narx' required>
-    <select name='client_id'><option value=''>Klientsiz</option>"""
+    body = """<div class='panel'>
+    <h3>🧾 Sotuv qo‘shish</h3>
+    <form method='post'>
+
+    <select name='sale_type'
+      onchange="this.form.querySelector('.stock-fields').style.display=this.value==='stock'?'block':'none';this.form.querySelector('.door-fields').style.display=this.value==='door'?'block':'none';">
+      <option value='stock'>📦 Ombordagi mahsulot</option>
+      <option value='door'>🚪 Eshik</option>
+    </select>
+
+    <select name='client_id'>
+      <option value=''>Klientsiz</option>"""
+
     body += "".join(
-        f"<option value='{c['id']}'>{c['name']}</option>" for c in cs
+        f"<option value='{c['id']}'>{c['name']}</option>"
+        for c in cs
     )
+
     body += """</select>
-    <input name='note' placeholder='Izoh (rang, model va h.k.)'>
-    <button>🚪 Eshikni sotish</button>
-    </form></div>
-    <div class='panel'><h3>🚪 Eshik sotuvlari</h3><table>
+
+    <div class='stock-fields'>
+      <select name='product_id'>"""
+
+    body += "".join(
+        f"<option value='{p['id']}'>{p['name']} ({p['qty']} {p['unit']})</option>"
+        for p in ps
+    )
+
+    body += """</select>
+      <input name='qty' type='number' step='0.01' placeholder='Miqdor'>
+      <input name='stock_price' type='number' step='0.01' placeholder='Narx'>
+    </div>
+
+    <div class='door-fields' style='display:none'>
+      <input name='width' type='number' step='0.01' placeholder='Eshik eni (mm)'>
+      <input name='height' type='number' step='0.01' placeholder='Eshik bo‘yi (mm)'>
+      <input name='door_price' type='number' step='0.01' placeholder='Eshik narxi'>
+      <input name='note' placeholder='Izoh (rang, model va h.k.)'>
+    </div>
+
+    <button>✅ Sotuvni saqlash</button>
+    </form>
+    </div>
+
+    <div class='panel'>
+    <h3>🚪 Eshik sotuvlari</h3>
+    <table>
     <tr><th>Sana</th><th>O‘lcham</th><th>Klient</th><th>Summa</th><th>Izoh</th></tr>"""
+
     body += "".join(
         f"<tr><td>{r['created_at']}</td>"
         f"<td>{r['width']:g} × {r['height']:g} mm</td>"
-        f"<td>{r['cn'] or ''}</td><td>{r['price']:,.0f}</td>"
-        f"<td>{r['note'] or ''}</td></tr>" for r in rows
+        f"<td>{r['cn'] or ''}</td>"
+        f"<td>{r['price']:,.0f} so‘m</td>"
+        f"<td>{r['note'] or ''}</td></tr>"
+        for r in door_sales
     )
-    body += "</table></div>"
-    return page("🚪 Eshik sotish", body)
 
+    body += """</table>
+    </div>
 
-@app.route("/sales", methods=["GET", "POST"])
-def sales():
-    c = db()
-    if request.method == "POST":
-        p = c.execute(
-            "SELECT * FROM products WHERE id=?", (request.form["product_id"],)
-        ).fetchone()
-        qty = float(request.form["qty"])
-        if not p or qty <= 0 or qty > p["qty"]:
-            flash("Mahsulot yoki miqdor noto‘g‘ri.")
-        else:
-            price = float(request.form["price"] or p["price"])
-            cid = request.form.get("client_id") or None
-            total = qty * price
-            c.execute("UPDATE products SET qty=qty-? WHERE id=?", (qty, p["id"]))
-            c.execute(
-                """INSERT INTO sales(product_id,client_id,qty,price,total,created_at)
-                VALUES(?,?,?,?,?,?)""",
-                (p["id"], cid, qty, price, total,
-                 datetime.now().strftime("%Y-%m-%d %H:%M"))
-            )
-            if cid:
-                c.execute("UPDATE clients SET debt=debt+? WHERE id=?", (total, cid))
-            c.commit()
-            flash("Sotuv muvaffaqiyatli qayd qilindi.")
-    ps = c.execute("SELECT * FROM products").fetchall()
-    cs = c.execute("SELECT * FROM clients").fetchall()
-    ss = c.execute(
-        """SELECT s.*,p.name pn,c.name cn FROM sales s
-        JOIN products p ON p.id=s.product_id LEFT JOIN clients c ON c.id=s.client_id
-        ORDER BY s.id DESC LIMIT 50"""
-    ).fetchall()
-    c.close()
-    body = """<div class='panel'><form method='post'>
-    <select name='product_id'>""" + "".join(
-        f"<option value='{p['id']}'>{p['name']} ({p['qty']} {p['unit']})</option>"
-        for p in ps
-    ) + """</select>
-    <input name='qty' type='number' step='0.01' placeholder='Miqdor' required>
-    <input name='price' type='number' step='0.01' placeholder='Narx'>
-    <select name='client_id'><option value=''>Klientsiz</option>""" + "".join(
-        f"<option value='{c['id']}'>{c['name']}</option>" for c in cs
-    ) + """</select><button>− Ombordan chiqarish</button></form></div>
-    <div class='panel'><table><tr><th>Sana</th><th>Mahsulot</th>
-    <th>Miqdor</th><th>Klient</th><th>Summa</th></tr>"""
+    <div class='panel'>
+    <h3>📦 Ombor mahsuloti sotuvlari</h3>
+    <table>
+    <tr><th>Sana</th><th>Mahsulot</th><th>Miqdor</th><th>Klient</th><th>Summa</th></tr>"""
+
     body += "".join(
-        f"<tr><td>{s['created_at']}</td><td>{s['pn']}</td><td>{s['qty']}</td>"
-        f"<td>{s['cn'] or ''}</td><td>{s['total']:,.0f}</td></tr>" for s in ss
+        f"<tr><td>{s['created_at']}</td>"
+        f"<td>{s['pn']}</td>"
+        f"<td>{s['qty']}</td>"
+        f"<td>{s['cn'] or ''}</td>"
+        f"<td>{s['total']:,.0f} so‘m</td></tr>"
+        for s in stock_sales
     )
-    return page("🧾 Sotuv / Chiqim", body + "</table></div>")
+
+    body += "</table></div>"
+
+    return page("🧾 Sotuv", body)
 
 
 if __name__ == "__main__":
