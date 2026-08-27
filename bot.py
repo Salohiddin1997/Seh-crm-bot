@@ -311,8 +311,8 @@ def sales():
             else:
                 now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-                # Eshik ombor mahsuloti emas:
-                # products jadvalidagi qoldiq umuman kamaytirilmaydi.
+                # Eshik tayyor mahsulot emas:
+                # ombordagi products qoldig‘i umuman kamaymaydi.
                 c.execute(
                     """INSERT INTO sales
                        (product_id,client_id,qty,price,total,created_at)
@@ -346,7 +346,9 @@ def sales():
 
             try:
                 qty = float(request.form.get("qty", 0))
-                price = float(request.form.get("stock_price") or p["price"])
+                price = float(
+                    request.form.get("stock_price") or p["price"]
+                )
             except (ValueError, TypeError, KeyError):
                 qty = -1
                 price = 0
@@ -379,8 +381,12 @@ def sales():
                 c.commit()
                 flash("Sotuv muvaffaqiyatli qayd qilindi.")
 
-    ps = c.execute("SELECT * FROM products ORDER BY name").fetchall()
-    cs = c.execute("SELECT * FROM clients ORDER BY name").fetchall()
+    ps = c.execute(
+        "SELECT * FROM products ORDER BY name"
+    ).fetchall()
+    cs = c.execute(
+        "SELECT * FROM clients ORDER BY name"
+    ).fetchall()
 
     stock_sales = c.execute(
         """SELECT s.*,p.name pn,c.name cn
@@ -405,7 +411,7 @@ def sales():
     <form method='post'>
 
     <select name='sale_type'
-      onchange="this.form.querySelector('.stock-fields').style.display=this.value==='stock'?'block':'none';this.form.querySelector('.door-fields').style.display=this.value==='door'?'block':'none';">
+      onchange=\"this.form.querySelector('.stock-fields').style.display=this.value==='stock'?'block':'none';this.form.querySelector('.door-fields').style.display=this.value==='door'?'block':'none';\">
       <option value='stock'>📦 Ombordagi mahsulot</option>
       <option value='door'>🚪 Eshik</option>
     </select>
